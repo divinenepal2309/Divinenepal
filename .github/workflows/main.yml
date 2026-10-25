@@ -1,0 +1,116 @@
+name: DIVINE NEPAL Android Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build APK and AAB
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Extract Project ZIP
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p extracted
+
+          ZIP_FILE=$(find . -maxdepth 2 -type f -name '*.zip' | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No ZIP file found in repository."
+            exit 1
+          fi
+
+          echo "Extracting: $ZIP_FILE"
+          unzip -o "$ZIP_FILE" -d extracted
+
+          INNER_ZIP=$(find extracted -type f -name '*.zip' | head -n 1)
+
+          if [ -n "$INNER_ZIP" ]; then
+            echo "Extracting nested ZIP: $INNER_ZIP"
+            mkdir -p extracted/inner
+            unzip -o "$INNER_ZIP" -d extracted/inner
+          fi
+
+      - name: Locate Android Project
+        id: android
+        shell: bash
+        run: |
+          set -e
+
+          PROJECT=$(find extracted -type f \
+            -path '*/android/settings.gradle' \
+            -print -quit)
+
+          if [ -z "$PROJECT" ]; then
+            PROJECT=$(find extracted -type f \
+              -path '*/android/settings.gradle.kts' \
+              -print -quit)
+          fi
+
+          if [ -z "$PROJECT" ]; then
+            echo "ERROR: Android project not found."
+            echo "Check the uploaded ZIP structure."
+            exit 1
+          fi
+
+          ANDROID_DIR=$(dirname "$PROJECT")
+
+          echo "dir=$ANDROID_DIR" >> "$GITHUB_OUTPUT"
+          echo "Android project found: $ANDROID_DIR"
+
+      - name: Build Debug APK
+        working-directory: ${{ steps.android.outputs.dir }}
+        run: gradle --no-daemon assembleDebug
+
+      - name: Build Release AAB
+        working-directory: ${{ steps.android.outputs.dir }}
+        run: gradle --no-daemon bundleRelease
+
+      - name: Collect Build Files
+        if: success()
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p build-output
+
+          find "${{ steps.android.outputs.dir }}/app/build/outputs" \
+            -type f \( -name '*.apk' -o -name '*.aab' \) \
+            -exec cp {} build-output/ \;
+
+          test -n "$(ls -A build-output)"
+
+          ls -lh build-output
+
+      - name: Upload APK and AAB
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DIVINE_NEPAL_APK_AAB
+          path: build-output/*
+          if-no-files-found: error
+          retention-days: 14
